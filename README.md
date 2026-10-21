@@ -12,7 +12,7 @@ The entire infrastructure (FastAPI, PostgreSQL, Redis) is containerized for seam
 
 1. Clone the repository:
 
-git clone https://github.com/saurabhp0211/decentro_expense_service.git
+git clone https://github.com/saurabhp0211/Equipay_Engine.git
 cd decentro_expense_service
 
 
