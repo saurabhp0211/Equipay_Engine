@@ -1,83 +1,88 @@
-# Decentro SDE Intern Assignment - Expense Sharing Service
+EquiPay - Distributed Expense Settlement Engine
 
-## Overview
-This is a backend service for an expense-sharing application, built using **FastAPI** and **SQLAlchemy** (with SQLite). 
+Overview
 
-While the baseline requirement was to handle simple equal expense splitting, I approached this assignment with a product-first mindset. Real-world expenses are messy, so I focused on building a flexible mathematical engine that handles different split types, prioritizes database transaction safety, and returns clean, human-readable data to the frontend.
+EquiPay is a highly concurrent backend service for an expense-sharing application, built using FastAPI, PostgreSQL, and Redis.
 
----
+Originally built as a foundational expense-splitting assignment, this project has been architected into a production-ready microservice. It features a flexible mathematical engine for complex split types, strict ACID-compliant database transactions, API rate limiting, JWT-based authentication, and a Greedy Debt Simplification algorithm to minimize total P2P transactions.
 
-## 🚀 Setup & Installation
+🚀 Setup & Installation (Dockerized)
 
-I utilized a virtual environment to keep the dependencies isolated and clean. 
+The entire infrastructure (FastAPI, PostgreSQL, Redis) is containerized for seamless, one-click deployments.
 
-**1. Clone the repository and navigate into it:**
+1. Clone the repository:
+
 git clone https://github.com/saurabhp0211/decentro_expense_service.git
 cd decentro_expense_service
 
-**2. Create and activate a virtual environment:**
-`python3 -m venv venv`
-*On Mac/Linux:* `source venv/bin/activate`
-*On Windows:* `venv\Scripts\activate`
 
-**3. Install dependencies:**
-`pip install fastapi uvicorn sqlalchemy pydantic email-validator alembic`
+2. Configure Environment Variables:
+Ensure your .env file is populated with your database credentials, JWT Secret, and Razorpay API keys.
 
-**4. Start the server:**
-`uvicorn main:app --reload`
-*Note: SQLite will automatically generate the expenses.db file locally. No external database setup is required.*
+3. Boot the Microservices:
 
-**5. View the API Docs:**
-Navigate to `http://127.0.0.1:8000/docs` to use the interactive Swagger UI to test the endpoints.
+docker compose up --build
 
----
 
-## 🗄️ Database Design
+4. Run Database Migrations:
+In a separate terminal, apply the Alembic schema migrations to your PostgreSQL instance:
 
-I designed the schema to clearly separate the "Master Receipt" (who swiped their card) from the "Ledger" (who owes what). 
+docker compose exec api alembic upgrade head
 
-* **`users`**: Core user details (ID, name, email, mobile).
-* **`groups`**: Group metadata.
-* **`group_members`**: An association table handling the Many-to-Many relationship between users and groups. 
-* **`expenses`**: The master receipt. If Mohit pays ₹3000 for a hotel, it is recorded here as a single row.
-* **`expense_splits`**: The individual ledger. This table holds the exact, calculated debt for every person involved in an expense. It has a Foreign Key back to the master `expenses` table.
 
-**Data Integrity Decision:** I heavily utilized SQLAlchemy's `ondelete="CASCADE"`. If a group or master expense is ever deleted, all associated splits and member mappings are automatically wiped which makes sure there is no orphan data lying in the database. Furthermore, I added an event listener in `database.py` to enforce SQLite `PRAGMA foreign_keys=ON`, which is disabled by default in SQLite.
+5. View the API Docs:
+Navigate to http://localhost:8000/docs to use the interactive Swagger UI. You must create a user and authenticate via the /login endpoint to receive a Bearer token for protected routes.
 
----
+🗄️ Database Design (PostgreSQL)
 
-## 💡 Product Enhancements & Design Decisions
+I designed a highly normalized relational schema to clearly separate the "Master Receipt" (who swiped their card) from the "Ledger" (who owes what).
 
-I treated this not just as an API assignment, but as a real product. Here are the core decisions I made:
+users: Core user details with hashed passwords.
 
-### 1. The Math Engine (EXACT & PERCENT Splits)
-The assignment asked for EQUAL splits, but I built `EXACT` and `PERCENT` splits as my mandatory product enhancement. 
-* **The "Why":** In real life, someone always orders an expensive drink, or a bill is split 60/40. The PERCENT split type makes it convenient for users. 
-* **The Guardrails:** I handled validation dynamically using Pydantic and custom FastAPI exceptions. If a user submits a percentage split that adds up to 99%, or an exact split that doesn't match the master total, the API intercepts it and throws a `400 Bad Request` before it ever touches the database. 
+groups: Group metadata.
 
-### 2. Global Balances vs. Group-Specific Balances
-For the `GET /balances/` route, I decided to calculate the **Net Global Debt** across all groups, rather than making it group-specific.
-* **The "Why":** If Rahul owes Mohit ₹500 from a Goa Trip, and Mohit owes Rahul ₹200 from a Friday Dinner, Rahul doesn't want to dig through two groups to do the math. He just wants to know his net total (₹300) so he can make a single UPI transfer. This perfectly mimics the actual UX of apps like Splitwise.
+group_members: An association table handling the Many-to-Many relationship.
 
-### 3. Frontend Empathy (The "Message" Field)
-APIs should make life easier for frontend developers and for an end user as well. When returning the balances, sending back raw user IDs requires the frontend to make secondary database calls to fetch the names. 
-* **The Fix:** I used a Python `set()` and SQLAlchemy's `in_()` operator to fetch all involved user names in a *single* optimized database query. I then formatted an f-string `message` directly into the JSON response making it coherent(e.g., `"message": "Rahul owes Mohit Rs400.0"`). 
+expenses: The master receipt (e.g., Mohit pays ₹3000 for a hotel).
 
-### 4. Transaction Safety (`db.flush()`)
-When creating an expense, multiple database writes happen (1 master expense + multiple splits). I used `db.flush()` to generate the master expense ID so I could assign it to the splits in the loop, but held off on `db.commit()` until the very end. If the math fails halfway through the loop, the entire transaction rolls back, preventing corrupt, half-saved financial data.
+expense_splits: The individual ledger. This table holds the exact, calculated debt for every person involved, with a Foreign Key back to the master expenses table.
 
----
+Data Integrity & Concurrency: I utilized SQLAlchemy's ondelete="CASCADE" to prevent orphan data. Critical financial transactions are wrapped in strict try...except blocks with db.rollback() to guarantee ACID compliance and prevent half-saved ledger states.
 
-## 🛠️ Assumptions Made
-* **Authentication:** Assumed out of scope for this task. Users are currently identified purely by passing their `user_id` in the JSON payload.
-* **Currency:** Assumed single currency (INR). 
-* **Rounding:** Floating-point math creates infinite decimals (e.g., 100/3 = 33.333...). I strictly enforce a 2-decimal round (`round(amount, 2)`) before saving any split to the database to prevent long-term accounting drift.
+💡 Architectural Features & Design Decisions
 
----
+1. Two-Pointer Greedy Debt Simplification
 
-## 🔮 Improvements with More Time
+Instead of returning a raw list of who owes whom (which creates a messy web of micro-debts), the /groups/{group_id}/balances endpoint runs a Two-Pointer Greedy Algorithm. It calculates the net balances of all users and simplifies the debt matrix in $O(N \log N)$ time, ensuring the minimum possible number of transactions are required to settle the group.
 
-Given the 48-hour turnaround time alongside my current full-time role, I prioritized strict database design, API routing, and mathematical correctness. With more time, I would build:
+2. Redis Caching & Cache Invalidation
 
-1. **Expense Categorization & Spending Analytics:** I would introduce a `category` tag (e.g., Food, Travel, Utilities) to the `expenses` table. This would allow the frontend to generate monthly spending analytics, helping users track their habits and see exactly where their money is going.
-2. **Containerization (Docker):** I would write a `Dockerfile` and `docker-compose.yml` to containerize the FastAPI application and SQLite database, ensuring seamless, one-click deployments and environment consistency across any machine.
+Because the debt simplification algorithm is computationally heavy, the calculated balances are cached in Redis. This reduces the $O(N \log N)$ calculation down to an $O(1)$ memory lookup. I implemented strict cache invalidation hooks: the exact moment a new expense is successfully committed to Postgres, the specific group's cache is purged.
+
+3. Razorpay Integration & State Management
+
+I integrated the Razorpay API to allow users to actually settle their debts. The /settlements/razorpay-order endpoint enforces strict validation to ensure users cannot overpay or settle debts they do not owe, before generating a secure order payload for the frontend.
+
+4. Asynchronous Background Tasks
+
+To ensure the main event loop isn't blocked by high-latency I/O operations (like sending email receipts or payment notifications), I implemented FastAPI BackgroundTasks. The API immediately returns a 201 Created response to the user while the notification executes asynchronously in the background.
+
+5. Security Guardrails (Auth & Rate Limiting)
+
+JWT OAuth2: All financial and group endpoints are secured via Dependency Injection (get_current_user), blocking cross-tenant data leaks and IDOR vulnerabilities.
+
+SlowAPI Rate Limiting: Endpoints are protected against brute-force and DoS attacks (e.g., the /login route is strictly limited to 5 requests/minute per IP).
+
+6. The Math Engine (EXACT & PERCENT Splits)
+
+I built EXACT and PERCENT splits to mimic real-world scenarios. I handled validation dynamically using Pydantic and custom FastAPI exceptions. If a user submits a percentage split that doesn't exactly equal 100%, the API intercepts it and throws a 400 Bad Request before it ever touches the database.
+
+🔮 Improvements with More Time
+
+Given more time, I plan to implement the following enterprise-grade features:
+
+Idempotency Keys: Implement an X-Idempotency-Key header cached in Redis to prevent Time-Of-Check to Time-Of-Use (TOCTOU) race conditions, guaranteeing users are never double-charged if they double-click the "Pay" button.
+
+Cloud Integration (AWS): Utilize boto3 to export monthly group spending analytics to an Amazon S3 bucket, returning presigned URLs to the user for PDF/CSV downloads.
+
+Automated CI/CD: Implement a GitHub Actions pipeline to automatically run Pytest suites and trigger rolling deployments to AWS ECS upon pushes to the main branch.
