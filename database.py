@@ -1,11 +1,16 @@
 from sqlalchemy import create_engine
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
+import os
+from dotenv import load_dotenv
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+load_dotenv()
 # SQLALCHEMY_DATABASE_URL = "sqlite:///./expenses.db"
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:root@db:5432/equipay_db"
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+if not SQLALCHEMY_DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set")
+
+
 
 engine=create_engine(SQLALCHEMY_DATABASE_URL)
 

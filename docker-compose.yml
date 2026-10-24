@@ -3,7 +3,7 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: root
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: equipay_db
     ports:
       - "5432:5432"
@@ -12,8 +12,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    
+    
 
   api:
     build: .
@@ -22,9 +22,8 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
-    environment:
-      - DATABASE_URL=postgresql://postgres:password123@db:5432/equipay_db
-      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
     depends_on:
       - db
       - redis
