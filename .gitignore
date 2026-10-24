@@ -14,3 +14,4 @@ __pycache__/
 
 # FastAPI / Pytest
 .pytest_cache/
+.DS_Store
