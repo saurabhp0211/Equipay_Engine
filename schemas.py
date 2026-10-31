@@ -1,4 +1,5 @@
-from pydantic import BaseModel,EmailStr, Field, field_validator
+from pydantic import BaseModel,EmailStr, Field
+from decimal import Decimal
 from typing import Optional, List
 from enum import Enum
 from datetime import datetime
@@ -56,21 +57,20 @@ class SplitType(str, Enum):
 
 class SplitInput(BaseModel):
     user_id:int
-    amount:Optional[float]=None
-    percent: Optional[float]=None
-
+    amount:Optional[Decimal]=Field(None,gt=0, max_digits=12, decimal_places=2)
+    percent: Optional[Decimal]=Field(None, gt=0, le=100, max_digits=5, decimal_places=2)
 
 class ExpenseCreate(BaseModel):
     group_id:int
     payer_id:int
-    amount:float
+    amount:Decimal=Field(gt=0, max_digits=12, decimal_places=2)
     description:str
     split_type:SplitType
     splits: List[SplitInput]
 
 class ExpenseSplitResponse(BaseModel):
     user_id:int
-    amount_owed:float
+    amount_owed:Decimal
 
     class Config:
         from_attributes=True
@@ -80,7 +80,7 @@ class ExpenseResponse(BaseModel):
     group_id:int
     payer_id: int
     created_by_id: int
-    amount:float
+    amount:Decimal
     description:str
     split_type:SplitType
     created_at:datetime
@@ -92,14 +92,7 @@ class ExpenseResponse(BaseModel):
 
 class SettlementCreate(BaseModel):
     receiver_id: int
-    amount: float=Field(gt=0, description="Amount must be strictly greater than 0")
-
-    @field_validator('amount')
-    @classmethod
-    def check_decimal_places(cls, value: float)->float:
-        if round(value,2)!=value:
-            raise ValueError("Amount cannot have more than 2 decimal places")
-        return value
+    amount: Decimal=Field(gt=0,max_digits=12, decimal_places=2, description="Amount must be strictly greater than 0")
 
     class Config:
         from_attributes=True

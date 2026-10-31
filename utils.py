@@ -1,9 +1,10 @@
 from collections import defaultdict
 from sqlalchemy.orm import Session
 import models
+from decimal import Decimal
 
 def simplify_debts(raw_transactions, user_map):
-    net_balances=defaultdict(float)
+    net_balances=defaultdict(Decimal)
 
     for t in raw_transactions:
         net_balances[t["borrower_id"]]-=t["amount"]
@@ -13,9 +14,9 @@ def simplify_debts(raw_transactions, user_map):
     creditors=[]
 
     for user_id, balance in net_balances.items():
-        if balance< -0.01:
+        if balance< 0:
             debtors.append([user_id, -balance])
-        elif balance >0.01:
+        elif balance >0:
             creditors.append([user_id, balance])
     
     debtors.sort(key=lambda x:x[1], reverse=True)
@@ -37,15 +38,15 @@ def simplify_debts(raw_transactions, user_map):
         simplified.append({
             "borrower_id":debtor_id,
             "payer_id":creditor_id,
-            "amount":round(settle_amount,2),
-            "message": f"{borrower_name} owes {payer_name} Rs{round(settle_amount,2)}"
+            "amount":settle_amount,
+            "message": f"{borrower_name} owes {payer_name} Rs{settle_amount}"
         })
 
         debtors[i][1] -=settle_amount
         creditors[j][1] -=settle_amount
 
-        if debtors[i][1]< 0.01: i+=1
-        if creditors[j][1] < 0.01: j+=1
+        if debtors[i][1]==0: i+=1
+        if creditors[j][1]==0: j+=1
 
     return simplified
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Table
+from sqlalchemy import Column, Integer, String, Numeric , ForeignKey, DateTime, Table
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -48,7 +48,7 @@ class Expense(Base):
     payer_id=Column(Integer, ForeignKey("users.id", ondelete="CASCADE"),nullable=False)
 
     created_by_id= Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    amount=Column(Float, nullable=False)
+    amount=Column(Numeric(12,2), nullable=False)
     description=Column(String, nullable=False)
     split_type=Column(String, nullable=False)
     created_at= Column(DateTime(timezone=True), server_default=func.now())
@@ -68,7 +68,7 @@ class ExpenseSplit(Base):
     id=Column(Integer, primary_key=True, index=True)
     expense_id=Column(Integer, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False)
     user_id=Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    amount_owed=Column(Float, nullable=False)
+    amount_owed=Column(Numeric(12,2), nullable=False)
 
     expense=relationship("Expense", back_populates="splits")
 

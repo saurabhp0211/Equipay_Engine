@@ -37,7 +37,7 @@ async def sqlalchemy_integrity_error_handler(request:Request, exc:IntegrityError
 
 @app.get("/")
 def health_check():
-    return {"status": "Decentro Expense Engine Active"}
+    return {"status": "Equipay Engine Active"}
 
 
 # Include all routers

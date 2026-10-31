@@ -12,6 +12,9 @@ import json
 from cache import redis_client
 from limiter import limiter
 from starlette.requests import Request
+from decimal import Decimal
+from fastapi.encoders import jsonable_encoder
+from splits import split_equal, split_percent
 
 
 router=APIRouter()
@@ -20,7 +23,7 @@ CurrentUser= Annotated[models.User, Depends(get_current_user)]
 DbSession = Annotated[Session, Depends(get_db)]
 
 
-def send_payment_notification(debtor_id:int, receiver_id:int, amount:float):
+def send_payment_notification(debtor_id:int, receiver_id:int, amount:Decimal):
     time.sleep(3)
     print(f"\n [ASYNC WORKER] SUCCESS: Receipt sent! User {debtor_id} paid User {receiver_id} Rs {amount}\n", flush=True)
 
@@ -29,8 +32,6 @@ def send_payment_notification(debtor_id:int, receiver_id:int, amount:float):
 def create_expense(request:Request , expense: schemas.ExpenseCreate, db: DbSession, current_user: CurrentUser):
     if not expense.splits:
         raise HTTPException(status_code=400, detail="The 'splits' array cannot be empty.")
-    if expense.amount <= 0:
-        raise HTTPException(status_code=400, detail="Expense amount must be greater than 0")
     
     group = db.query(models.Group).filter(models.Group.id == expense.group_id).first()
     if not group:
@@ -46,47 +47,35 @@ def create_expense(request:Request , expense: schemas.ExpenseCreate, db: DbSessi
     if expense.payer_id not in group_member_ids:
         raise HTTPException(status_code=400, detail="The specified payer is not a member of this group")
    
+    split_user_ids=[split.user_id for split in expense.splits]
+    if len(split_user_ids)!=len(set(split_user_ids)):
+        raise HTTPException(status_code=400, detail="Each user can appear only once in 'splits'")
 
-    if expense.split_type == schemas.SplitType.EQUAL:
-        split_count = len(expense.splits)
-        base_amount=round(expense.amount/split_count,2)
+    for user_id in split_user_ids:
+        if user_id not in group_member_ids:
+            raise HTTPException(status_code=400, detail=f"User {user_id} is not in the group")
 
-        # calculating exactly how much is missing due to rounding
-        total_base=base_amount*split_count
-        remainder=round(expense.amount-total_base,2)
+    if expense.split_type== schemas.SplitType.EQUAL:
+        owed=split_equal(expense.amount, len(expense.splits))
 
-        for i, split in enumerate(expense.splits):
-            if split.user_id not in group_member_ids:
-                raise HTTPException(status_code=400, detail=f"User {split.user_id} is not in the group")
+    elif expense.split_type==schemas.SplitType.EXACT:
+        if any(split.amount is None for split in expense.splits):
+            raise HTTPException(status_code=400, detail="Amount is required for exact splits")
 
-            split.amount=base_amount
+        owed= [split.amount for split in expense.splits]
+        if sum(owed)!= expense.amount:
+            raise HTTPException(status_code=400, detail=f"EXACT splits sum({sum(owed)}) must equal total amount ({expense.amount})")
 
-            if i==0:
-                split.amount+=remainder
-        
+    elif expense.split_type==schemas.SplitType.PERCENT:
+        if any(split.percent is None for split in expense.splits):
+            raise HTTPException(status_code=400, detail="Percent is required for PERCENT splits")
+        percents= [split.percent for split in expense.splits]
 
-    elif expense.split_type == schemas.SplitType.EXACT:
-        total_split = 0.0
-        for split in expense.splits:
-            if split.user_id not in group_member_ids:
-                raise HTTPException(status_code=400, detail=f"User {split.user_id} is not in the group")
-            if split.amount is None:
-                raise HTTPException(status_code=400, detail="Amount is required for EXACT splits")
-            total_split += split.amount
-        if total_split != expense.amount:
-            raise HTTPException(status_code=400, detail=f"EXACT splits sum({total_split}) must equal total amount ({expense.amount})")
-        
-    elif expense.split_type == schemas.SplitType.PERCENT:
-        total_percent = 0.0
-        for split in expense.splits:
-            if split.user_id not in group_member_ids:
-                raise HTTPException(status_code=400, detail=f"User{split.user_id} is not present in the group")
-            if split.percent is None:
-                raise HTTPException(status_code=400, detail="Percent is required for PERCENT splits")
-            total_percent += split.percent
-        if abs(total_percent- 100.0)> 0.01:
-            raise HTTPException(status_code=400, detail=f"PERCENT splits must sum exactly to 100. Current sum: {total_percent}")
-        
+        if sum(percents)!=100:
+            raise HTTPException(status_code=400, detail=f"PERCENT splits must sum exactly to 100. Current Sum: {sum(percents)}")
+        owed= split_percent(expense.amount, percents)
+
+
     db_expense = models.Expense(
         group_id=expense.group_id, 
         payer_id=expense.payer_id,
@@ -98,19 +87,12 @@ def create_expense(request:Request , expense: schemas.ExpenseCreate, db: DbSessi
     db.add(db_expense)
     db.flush()
 
-    for split in expense.splits:
-        owed_amount = 0.0
-        if expense.split_type == schemas.SplitType.EQUAL:
-            owed_amount = split.amount
-        elif expense.split_type == schemas.SplitType.EXACT:
-            owed_amount = split.amount
-        elif expense.split_type == schemas.SplitType.PERCENT:
-            owed_amount = (expense.amount * split.percent) / 100.0
+    for split, amount_owed in zip(expense.splits, owed):
         
         db_split = models.ExpenseSplit(
             expense_id=db_expense.id,
             user_id=split.user_id,
-            amount_owed=round(owed_amount, 2)
+            amount_owed=amount_owed
         )
         db.add(db_split)
 
@@ -151,7 +133,7 @@ def create_settlement(
     # new validation layer for the owed amount
     current_balances=fetch_and_calculate_balances(group_id, db)
 
-    current_debt=0.0
+    current_debt=Decimal("0")
     for debt in current_balances:
         if debt["borrower_id"]==debtor_id and debt["payer_id"] == settlement.receiver_id:
             current_debt=debt["amount"]
@@ -229,7 +211,7 @@ def create_razorpay_order(
     # strict owed amount validation
     current_balances=fetch_and_calculate_balances(group_id, db)
 
-    current_debt=0.0
+    current_debt=Decimal("0")
     for debt in current_balances:
         if debt["borrower_id"]==debtor_id and debt["payer_id"]==settlement.receiver_id:
             current_debt=debt["amount"]
@@ -321,7 +303,7 @@ def get_group_balances(request:Request, group_id: int, db: DbSession, current_us
     
     final_balances = fetch_and_calculate_balances(group_id, db)
 
-    redis_client.setex(cache_key, 3600, json.dumps(final_balances))
+    redis_client.setex(cache_key, 3600, json.dumps(jsonable_encoder(final_balances)))
 
     return {"overall_balances": final_balances}
 
