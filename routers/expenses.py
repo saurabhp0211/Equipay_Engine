@@ -27,13 +27,41 @@ def send_payment_notification(debtor_id:int, receiver_id:int, amount:Decimal):
     time.sleep(3)
     print(f"\n [ASYNC WORKER] SUCCESS: Receipt sent! User {debtor_id} paid User {receiver_id} Rs {amount}\n", flush=True)
 
+
+def validate_settlement(db:Session, group_id:int, debtor_id: int,receiver_id:int, amount:Decimal, lock:bool):
+    """Checks a settlement is allowed. With lock=True, holds the group row lock until commit."""
+    if debtor_id==receiver_id:
+        raise HTTPException(status_code=400, detail="You cannot settle a debt with yourself")
+
+    query=db.query(models.Group).filter(models.Group.id==group_id)
+    if lock:
+        query=query.with_for_update()
+    group=query.first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    if not any(member.id==receiver_id for member in group.members):
+        raise HTTPException(status_code=400, detail="Receiver is not a member of this group")
+
+    current_debt=Decimal("0")
+    for debt in fetch_and_calculate_balances(group_id,db):
+        if debt["borrower_id"]==debtor_id and debt["payer_id"]==receiver_id:
+            current_debt=debt["amount"]
+            break
+
+    if current_debt<=0:
+        raise HTTPException(status_code=400, detail="Invalid transaction: You do not owe this user any money.")
+    if amount>current_debt:
+        raise HTTPException(status_code=400, detail=f"Overpayment blocked: You only owe Rs{current_debt}. Please adjust the settlement amount.")
+
 @router.post("/expenses/", response_model=schemas.ExpenseResponse, status_code=status.HTTP_201_CREATED, tags=["Expenses"])
 @limiter.limit("6/minute")
 def create_expense(request:Request , expense: schemas.ExpenseCreate, db: DbSession, current_user: CurrentUser):
     if not expense.splits:
         raise HTTPException(status_code=400, detail="The 'splits' array cannot be empty.")
     
-    group = db.query(models.Group).filter(models.Group.id == expense.group_id).first()
+    group = db.query(models.Group).filter(models.Group.id == expense.group_id).with_for_update().first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
@@ -99,6 +127,7 @@ def create_expense(request:Request , expense: schemas.ExpenseCreate, db: DbSessi
     redis_client.delete(f"group_{expense.group_id}_balances")
 
     db.commit()
+    redis_client.delete(f"group_{expense.group_id}_balances")
     db.refresh(db_expense)
     return db_expense
 
@@ -115,41 +144,7 @@ def create_settlement(
 ):
     debtor_id= current_user.id
 
-    # prevents settling with yourself
-    if debtor_id==settlement.receiver_id:
-        raise HTTPException(status_code=400, detail="You cannot settle a debt with yourself")
-    
-
-    # validation-- Ensures receiver exists in the group
-    group=db.query(models.Group).filter(models.Group.id==group_id).first()
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-
-    receiver_in_group=any(member.id==settlement.receiver_id for member in group.members)
-    if not receiver_in_group:
-        raise HTTPException(status_code=400, detail="Receiver is not a member of this group.") 
-
-
-    # new validation layer for the owed amount
-    current_balances=fetch_and_calculate_balances(group_id, db)
-
-    current_debt=Decimal("0")
-    for debt in current_balances:
-        if debt["borrower_id"]==debtor_id and debt["payer_id"] == settlement.receiver_id:
-            current_debt=debt["amount"]
-            break
-
-    if current_debt<=0:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid transaction: You do not currently owe this user any money."
-        )
-
-    if settlement.amount>current_debt:
-        raise HTTPException(status_code=400,
-                            detail=f"Overpayment blocked: You only owe Rs{current_debt}. Please adjust the settlement amount." 
-                            )
-
+    validate_settlement(db, group_id, debtor_id, settlement.receiver_id, settlement.amount, lock=True)
 
 
     db_settlement=models.Expense(
@@ -172,6 +167,7 @@ def create_settlement(
 
     db.add(db_split)
     db.commit()
+    redis_client.delete(f"group_{group_id}_balances")
     db.refresh(db_settlement)
 
     background_tasks.add_task(
@@ -325,6 +321,10 @@ def delete_expense(request:Request, group_id:int, expense_id: int, db:DbSession,
     if current_user.id not in [expense.created_by_id, expense.payer_id]:
         raise HTTPException(status_code=403, detail="You do not have permission to delete this expense")
 
+    db.query(models.Group).filter(models.Group.id==group_id).with_for_update().first()
+
+
     db.delete(expense)
     db.commit()
+    redis_client.delete(f"group_{group_id}_balances")
     return 
