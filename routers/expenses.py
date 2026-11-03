@@ -282,26 +282,27 @@ def get_Group_Expenses(
 @limiter.limit("60/minute")
 def get_group_balances(request:Request, group_id: int, db: DbSession, current_user: CurrentUser):
 
-    cache_key= f"group_{group_id}_balances"
-
-    cached_balances=redis_client.get(cache_key)
-    if cached_balances:
-        print("Serving from Redis Cache!")
-        return json.loads(cached_balances)
-
+    
     group = db.query(models.Group).filter(models.Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
     if current_user not in group.members:
         raise HTTPException(status_code=403, detail="Not authorized to view balances")
+
+    cache_key= f"group_{group_id}_balances"
+
+    cached_balances=redis_client.get(cache_key)
+    if cached_balances:
+        print("Serving from Redis Cache!")
+        return json.loads(cached_balances)
     
     
-    final_balances = fetch_and_calculate_balances(group_id, db)
+    response= {"overall_balances": jsonable_encoder(fetch_and_calculate_balances(group_id, db))}
 
-    redis_client.setex(cache_key, 3600, json.dumps(jsonable_encoder(final_balances)))
+    redis_client.setex(cache_key, 3600, json.dumps(response))
 
-    return {"overall_balances": final_balances}
+    return response
 
 
 @router.delete("/groups/{group_id}/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Expenses"])
